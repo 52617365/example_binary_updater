@@ -38,6 +38,7 @@ go.work
 !go.sum
 !go.mod
 
+!*.pub
 !README.md
 !LICENSE
 
