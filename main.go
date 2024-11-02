@@ -66,24 +66,24 @@ func waitUntilPidIsDead(pid int) (success bool) {
 	}
 }
 
-func configureLogFile(p string) {
-	logFile, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		log.Fatalf("Error opening log file: %v", err)
-	}
-	log.SetOutput(logFile)
-}
+// func configureLogFile(p string) {
+// 	logFile, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+// 	if err != nil {
+// 		log.Fatalf("Error opening log file: %v", err)
+// 	}
+// 	log.SetOutput(logFile)
+// }
 
 func main() {
 	if len(os.Args) != 3 {
 		log.Fatalf("Usage: %s <pid> <path to binary to update>", os.Args[0])
 	}
-	currentExecutable := os.Args[0]
+	//currentExecutable := os.Args[0]
 	binaryPid := os.Args[1]
 	pathToBinaryToUpdate := os.Args[2]
 
-	logPath := path.Join(path.Dir(currentExecutable), "updater.log")
-	configureLogFile(logPath)
+	//logPath := path.Join(path.Dir(currentExecutable), "updater.log")
+	//configureLogFile(logPath)
 
 	strconvPid, err := strconv.Atoi(binaryPid)
 	if err != nil {
@@ -187,6 +187,10 @@ func readPublicKey(filename string) (*rsa.PublicKey, error) {
 	return rsaPubKey, nil
 }
 
+// verifySignature verifies that the signature created by the release publisher is correct.
+// The publisher first generates a sha256sum from the file contents and then signs this shasum with their private key, we call this the "encrypted shasum".
+// On the "client" side, a sha256sum is generated from the file contents and the encrypted shasum is decrypted with the public key. These shasums are then compared
+// and if they're equal the signature is correct. This is the exact method used by CA's that sign certificates.
 func verifySignature(publicKey *rsa.PublicKey, fileShasum []byte, signature []byte) error {
 	err := rsa.VerifyPSS(publicKey, crypto.SHA256, fileShasum, signature, nil)
 	if err != nil {
@@ -210,17 +214,37 @@ func generateShasum256FromFile(p string) []byte {
 	return h.Sum(nil)
 }
 
+// gitInPath checks that "git" is installed on the system and assigned to path. For the sake of this blog post, the function checks that git is in the path but if you're using some
+// other remote server you don't need to do this. Even if you used git but did not want to set it into your path you could also specify the whole path and use it that way.
+func gitInPath() bool {
+	_, err := exec.LookPath("git")
+	if errors.Is(err, exec.ErrDot) {
+		err = nil
+	}
+	if err != nil {
+		return false
+	}
+	return true
+}
+
+// fetchNewBinaryFromRemote fetches the new binary that is being used to update the current one from a remote server.
+// This remote server could be anything but for the sake of example in this blog post it is a git repository.
 func fetchNewBinaryFromRemote(path string, outPath string) {
+	if !gitInPath() {
+		log.Fatalf("Git is not installed on the system")
+	}
+
 	_, err := exec.Command("git", "clone", path, outPath).Output()
 	if err != nil {
 		log.Fatalf("Failed to fetch new binary: %v", err)
 	}
+
 	log.Printf("Successfully fetched new binary from remote")
 
 	pathToGitFolder := filepath.Join(outPath, ".git")
 	err = os.RemoveAll(pathToGitFolder)
+
 	if err != nil {
 		log.Fatalf("Failed to remove .git folder: %v", err)
 	}
-
 }
