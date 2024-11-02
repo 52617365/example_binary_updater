@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -66,22 +66,33 @@ func waitUntilPidIsDead(pid int) (success bool) {
 	}
 }
 
+func configureLogFile(p string) {
+	logFile, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		log.Fatalf("Error opening log file: %v", err)
+	}
+	log.SetOutput(logFile)
+}
+
 func main() {
-	// Fetches the pid of the parent of this binary (The binary that needs updating.)
-	isTest := flag.Bool("test", false, "set testing to true if testing")
-	flag.Parse()
-	if !(*isTest) {
-		binaryPid := os.Getppid()
-		log.Printf("Found parent pid: %d\n", binaryPid)
+	if len(os.Args) != 3 {
+		log.Fatalf("Usage: %s <pid> <path to binary to update>", os.Args[0])
+	}
+	currentExecutable := os.Args[0]
+	binaryPid := os.Args[1]
+	pathToBinaryToUpdate := os.Args[2]
 
-		log.Printf("Found parent process from pid: %d\n", binaryPid)
+	logPath := path.Join(path.Dir(currentExecutable), "updater.log")
+	configureLogFile(logPath)
 
-		success := waitUntilPidIsDead(binaryPid)
-		if !success {
-			log.Fatalln("Error waiting for parent pid to die")
-		}
+	strconvPid, err := strconv.Atoi(binaryPid)
+	if err != nil {
+		log.Fatalf("Invalid pid: %v", err)
+	}
+	success := waitUntilPidIsDead(strconvPid)
 
-		log.Printf("Parent process %d has died, we can continue updating\n", binaryPid)
+	if !success {
+		log.Fatalf("We waited 20 seconds for the ppid %d to die but it did not. We will not kill the parent process because it could lead to unexpected consequences.", strconvPid)
 	}
 
 	remoteName := "example_binary_for_updater"
@@ -92,28 +103,63 @@ func main() {
 	}
 	defer os.RemoveAll(dir)
 
-	fullPathTmp := filepath.Join(dir, remoteName)
-	fetchNewBinaryFromRemote(binaryRemotePath, fullPathTmp)
+	fullPathToRemote := filepath.Join(dir, remoteName)
+	fetchNewBinaryFromRemote(binaryRemotePath, fullPathToRemote)
 
-	encryptedShasumPath := path.Join(fullPathTmp, "signature.bin")
-	encryptedShasum, err := os.ReadFile(encryptedShasumPath)
+	encryptedShasumPath := path.Join(fullPathToRemote, "signature.bin")
+	remoteEncryptedShasum, err := os.ReadFile(encryptedShasumPath)
 	if err != nil {
 		log.Fatalln("signature did not exist in fetched repository")
 	}
-	binaryPath := path.Join(fullPathTmp, "AutoUpdateBinary")
-	binaryShasum := generateShasum256FromFile(binaryPath)
-	currentWorkingDirectory, _ := os.Getwd()
-	publicKeyPath := path.Join(currentWorkingDirectory, "public.pub")
+
+	remoteBinaryPath := path.Join(fullPathToRemote, "AutoUpdateBinary")
+	remoteBinaryShasum := generateShasum256FromFile(remoteBinaryPath)
+
+	currentExecutableRootPath := path.Dir(os.Args[0])
+	publicKeyPath := path.Join(currentExecutableRootPath, "public.pub")
 
 	publicKey, err := readPublicKey(publicKeyPath)
 	if err != nil {
 		log.Fatalf("Error reading public key: %v", err)
 	}
 
-	err = verifySignature(publicKey, binaryShasum, encryptedShasum)
+	err = verifySignature(publicKey, remoteBinaryShasum, remoteEncryptedShasum)
 	if err != nil {
 		log.Fatalln("Invalid signature")
 	}
+
+	log.Println("The signature was correct, updating the binary")
+
+	err = overWriteFileWithSamePermissions(pathToBinaryToUpdate, remoteBinaryPath)
+
+	if err != nil {
+		log.Fatalln(err)
+	}
+	// Either restart the original GUI/CLI or just exit
+}
+
+func overWriteFileWithSamePermissions(dst string, src string) error {
+	dstFileStats, err := os.Stat(dst)
+	if err != nil {
+		return err
+	}
+
+	dstFilePermissions := dstFileStats.Mode()
+
+	srcContents, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+
+	// Creating a backup of the destination file.
+	unixStamp := time.Now().Unix()
+	err = os.Rename(dst, fmt.Sprintf("%s.bak_%d", dst, unixStamp))
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(dst, srcContents, dstFilePermissions)
+	return err
 }
 
 func readPublicKey(filename string) (*rsa.PublicKey, error) {
