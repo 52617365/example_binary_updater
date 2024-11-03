@@ -49,7 +49,7 @@ func main() {
 		log.Fatalf("Usage: %s <pid> <path to binary to update>", os.Args[0])
 	}
 	binaryPid := os.Args[1]
-	pathToBinaryToUpdate := os.Args[2]
+	binaryToUpdate := os.Args[2]
 
 	//	logPath := path.Join(path.Dir(os.Args[0]), "updater.log")
 	//	configureLogFile(logPath)
@@ -66,31 +66,27 @@ func main() {
 
 	remoteBinaryPathDirectory := fetchNewBinaryFromRemote()
 
-	encryptedShasumPath := path.Join(remoteBinaryPathDirectory, "signature.bin")
-	remoteEncryptedShasum, err := os.ReadFile(encryptedShasumPath)
+	publishersEncryptedShasum, err := getBinarySignature(remoteBinaryPathDirectory)
 	if err != nil {
 		log.Fatalln("signature did not exist in fetched repository")
 	}
 
 	remoteBinaryPath := path.Join(remoteBinaryPathDirectory, "AutoUpdateBinary")
-	remoteBinaryShasum := generateShasum256FromFile(remoteBinaryPath)
+	remoteBinaryShasum := generateLocalSha256FromBinary(remoteBinaryPath)
 
-	currentExecutableRootPath := path.Dir(os.Args[0])
-	publicKeyPath := path.Join(currentExecutableRootPath, "public.pub")
-
-	publicKey, err := readPublicKey(publicKeyPath)
+	publishersPublicKey, err := getPublishersPublicKey()
 	if err != nil {
-		log.Fatalf("Error reading public key: %v", err)
+		log.Fatalf("Error reading publishers public key: %v", err)
 	}
 
-	err = verifySignature(publicKey, remoteBinaryShasum, remoteEncryptedShasum)
+	err = verifyPublishersSignature(publishersPublicKey, remoteBinaryShasum, publishersEncryptedShasum)
 	if err != nil {
 		log.Fatalln("Invalid signature")
 	}
 
 	log.Println("The signature was correct, updating the binary")
 
-	err = overWriteFileWithSamePermissions(pathToBinaryToUpdate, remoteBinaryPath)
+	err = updateBinary(binaryToUpdate, remoteBinaryPath)
 
 	if err != nil {
 		log.Fatalln(err)
@@ -98,7 +94,27 @@ func main() {
 	// Either restart the original GUI/CLI or just exit
 }
 
-func overWriteFileWithSamePermissions(dst string, src string) error {
+func getBinarySignature(remoteBinaryPathDirectory string) ([]byte, error) {
+	encryptedShasumPath := path.Join(remoteBinaryPathDirectory, "signature.bin")
+	remoteEncryptedShasum, err := os.ReadFile(encryptedShasumPath)
+	if err != nil {
+		return nil, err
+	}
+	return remoteEncryptedShasum, nil
+}
+
+func getPublishersPublicKey() (*rsa.PublicKey, error) {
+	currentExecutableRootPath := path.Dir(os.Args[0])
+	publicKeyPath := path.Join(currentExecutableRootPath, "public.pub")
+
+	publicKey, err := readPublicKey(publicKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	return publicKey, nil
+}
+
+func updateBinary(dst string, src string) error {
 	dstFileStats, err := os.Stat(dst)
 	if err != nil {
 		return err
@@ -144,11 +160,11 @@ func readPublicKey(filename string) (*rsa.PublicKey, error) {
 	return rsaPubKey, nil
 }
 
-// verifySignature verifies that the signature created by the release publisher is correct.
+// verifyPublishersSignature verifies that the signature created by the release publisher is correct.
 // The publisher first generates a sha256sum from the file contents and then signs this shasum with their private key, we call this the "encrypted shasum".
 // On the "client" side, a sha256sum is generated from the file contents and the encrypted shasum is decrypted with the public key. These shasums are then compared
 // and if they're equal the signature is correct. This is the exact method used by CA's that sign certificates.
-func verifySignature(publicKey *rsa.PublicKey, fileShasum []byte, signature []byte) error {
+func verifyPublishersSignature(publicKey *rsa.PublicKey, fileShasum []byte, signature []byte) error {
 	err := rsa.VerifyPSS(publicKey, crypto.SHA256, fileShasum, signature, nil)
 	if err != nil {
 		return fmt.Errorf("signature verification failed: %v", err)
@@ -156,7 +172,7 @@ func verifySignature(publicKey *rsa.PublicKey, fileShasum []byte, signature []by
 	return nil
 }
 
-func generateShasum256FromFile(p string) []byte {
+func generateLocalSha256FromBinary(p string) []byte {
 	f, err := os.Open(p)
 	if err != nil {
 		log.Fatal(err)
