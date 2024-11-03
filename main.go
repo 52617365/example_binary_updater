@@ -15,38 +15,8 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 )
-
-func pidExists(pid int) (bool, error) {
-	if pid <= 0 {
-		return false, fmt.Errorf("invalid pid %v", pid)
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false, err
-	}
-	err = proc.Signal(syscall.Signal(0))
-	if err == nil {
-		return true, nil
-	}
-	if err.Error() == "os: process already finished" {
-		return false, nil
-	}
-	var errno syscall.Errno
-	ok := errors.As(err, &errno)
-	if !ok {
-		return false, err
-	}
-	switch {
-	case errors.Is(errno, syscall.ESRCH):
-		return false, nil
-	case errors.Is(errno, syscall.EPERM):
-		return true, nil
-	}
-	return false, err
-}
 
 func waitUntilPidIsDead(pid int) (success bool) {
 	var c int
@@ -56,34 +26,33 @@ func waitUntilPidIsDead(pid int) (success bool) {
 			return false
 		}
 		c += 1
-		pidExists, err := pidExists(pid)
+		pExists, err := pidExists(pid)
 		if err != nil {
-			log.Printf("check number %d check returned %v", c, err)
+			log.Fatalf("check number %d check returned %v", c, err)
 		}
-		if !pidExists {
+		if !pExists {
 			return true
 		}
 	}
 }
 
-// func configureLogFile(p string) {
-// 	logFile, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-// 	if err != nil {
-// 		log.Fatalf("Error opening log file: %v", err)
-// 	}
-// 	log.SetOutput(logFile)
-// }
+//func configureLogFile(p string) {
+//	logFile, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+//	if err != nil {
+//		log.Fatalf("Error opening log file: %v", err)
+//	}
+//	log.SetOutput(logFile)
+//}
 
 func main() {
 	if len(os.Args) != 3 {
 		log.Fatalf("Usage: %s <pid> <path to binary to update>", os.Args[0])
 	}
-	//currentExecutable := os.Args[0]
 	binaryPid := os.Args[1]
 	pathToBinaryToUpdate := os.Args[2]
 
-	//logPath := path.Join(path.Dir(currentExecutable), "updater.log")
-	//configureLogFile(logPath)
+	//	logPath := path.Join(path.Dir(os.Args[0]), "updater.log")
+	//	configureLogFile(logPath)
 
 	strconvPid, err := strconv.Atoi(binaryPid)
 	if err != nil {
@@ -95,24 +64,15 @@ func main() {
 		log.Fatalf("We waited 20 seconds for the ppid %d to die but it did not. We will not kill the parent process because it could lead to unexpected consequences.", strconvPid)
 	}
 
-	remoteName := "example_binary_for_updater"
-	binaryRemotePath := fmt.Sprintf("git@github.com:52617365/%s.git", remoteName)
-	dir, err := os.MkdirTemp("", "")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
+	remoteBinaryPathDirectory := fetchNewBinaryFromRemote()
 
-	fullPathToRemote := filepath.Join(dir, remoteName)
-	fetchNewBinaryFromRemote(binaryRemotePath, fullPathToRemote)
-
-	encryptedShasumPath := path.Join(fullPathToRemote, "signature.bin")
+	encryptedShasumPath := path.Join(remoteBinaryPathDirectory, "signature.bin")
 	remoteEncryptedShasum, err := os.ReadFile(encryptedShasumPath)
 	if err != nil {
 		log.Fatalln("signature did not exist in fetched repository")
 	}
 
-	remoteBinaryPath := path.Join(fullPathToRemote, "AutoUpdateBinary")
+	remoteBinaryPath := path.Join(remoteBinaryPathDirectory, "AutoUpdateBinary")
 	remoteBinaryShasum := generateShasum256FromFile(remoteBinaryPath)
 
 	currentExecutableRootPath := path.Dir(os.Args[0])
@@ -163,19 +123,16 @@ func overWriteFileWithSamePermissions(dst string, src string) error {
 }
 
 func readPublicKey(filename string) (*rsa.PublicKey, error) {
-	// Read the file
 	keyData, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decode the PEM block
 	block, _ := pem.Decode(keyData)
 	if block == nil {
 		return nil, fmt.Errorf("failed to parse PEM block containing the public key")
 	}
 
-	// Parse the public key
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		return nil, err
@@ -229,22 +186,34 @@ func gitInPath() bool {
 
 // fetchNewBinaryFromRemote fetches the new binary that is being used to update the current one from a remote server.
 // This remote server could be anything but for the sake of example in this blog post it is a git repository.
-func fetchNewBinaryFromRemote(path string, outPath string) {
+func fetchNewBinaryFromRemote() string {
 	if !gitInPath() {
 		log.Fatalf("Git is not installed on the system")
 	}
 
-	_, err := exec.Command("git", "clone", path, outPath).Output()
+	remoteName := "example_binary_for_updater"
+	binaryRemotePath := fmt.Sprintf("git@github.com:52617365/%s.git", remoteName)
+	dir, err := os.MkdirTemp("", "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	fullPathToRemote := filepath.Join(dir, remoteName)
+
+	_, err = exec.Command("git", "clone", binaryRemotePath, fullPathToRemote).Output()
 	if err != nil {
 		log.Fatalf("Failed to fetch new binary: %v", err)
 	}
 
 	log.Printf("Successfully fetched new binary from remote")
 
-	pathToGitFolder := filepath.Join(outPath, ".git")
+	pathToGitFolder := filepath.Join(fullPathToRemote, ".git")
 	err = os.RemoveAll(pathToGitFolder)
 
 	if err != nil {
 		log.Fatalf("Failed to remove .git folder: %v", err)
 	}
+
+	return fullPathToRemote
 }
