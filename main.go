@@ -18,6 +18,7 @@ import (
 	"time"
 )
 
+// waitUntilPidIsDead waits 20 seconds for a pid to disappear to know the process has stopped running.
 func waitUntilPidIsDead(pid int) (success bool) {
 	var c int
 	for {
@@ -48,20 +49,20 @@ func main() {
 	if len(os.Args) != 3 {
 		log.Fatalf("Usage: %s <pid> <path to binary to update>", os.Args[0])
 	}
-	binaryPid := os.Args[1]
+	parentPidString := os.Args[1]
 	binaryToUpdate := os.Args[2]
 
 	//	logPath := path.Join(path.Dir(os.Args[0]), "updater.log")
 	//	configureLogFile(logPath)
 
-	strconvPid, err := strconv.Atoi(binaryPid)
+	parentPidInt, err := strconv.Atoi(parentPidString)
 	if err != nil {
 		log.Fatalf("Invalid pid: %v", err)
 	}
-	success := waitUntilPidIsDead(strconvPid)
+	success := waitUntilPidIsDead(parentPidInt)
 
 	if !success {
-		log.Fatalf("We waited 20 seconds for the ppid %d to die but it did not. We will not kill the parent process because it could lead to unexpected consequences.", strconvPid)
+		log.Fatalf("We waited 20 seconds for the ppid %d to die but it did not. We will not kill the parent process because it could lead to unexpected consequences.", parentPidInt)
 	}
 
 	remoteBinaryPathDirectory := fetchNewBinaryFromRemote()
@@ -94,6 +95,7 @@ func main() {
 	// Either restart the original GUI/CLI or just exit
 }
 
+// getBinarySignature The publisher has a signature.bin file that contains the encrypted checksum
 func getBinarySignature(remoteBinaryPathDirectory string) ([]byte, error) {
 	encryptedShasumPath := path.Join(remoteBinaryPathDirectory, "signature.bin")
 	remoteEncryptedShasum, err := os.ReadFile(encryptedShasumPath)
@@ -103,6 +105,7 @@ func getBinarySignature(remoteBinaryPathDirectory string) ([]byte, error) {
 	return remoteEncryptedShasum, nil
 }
 
+// getPublishersPublicKey reads the publishers public key. This public key could be stored in some store somewhere.
 func getPublishersPublicKey() (*rsa.PublicKey, error) {
 	currentExecutableRootPath := path.Dir(os.Args[0])
 	publicKeyPath := path.Join(currentExecutableRootPath, "public.pub")
@@ -114,6 +117,7 @@ func getPublishersPublicKey() (*rsa.PublicKey, error) {
 	return publicKey, nil
 }
 
+// updateBinary retrieves the permissions of the original binary, and writes the new binary in its place with the same permissions.
 func updateBinary(dst string, src string) error {
 	dstFileStats, err := os.Stat(dst)
 	if err != nil {
